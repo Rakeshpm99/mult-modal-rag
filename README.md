@@ -1,4 +1,4 @@
-Advanced Multimodal RAG Chatbot
+#Advanced Multimodal RAG Chatbot
 
 This project is a sophisticated, multimodal Retrieval-Augmented Generation (RAG) chatbot built with Python, LangChain, and Google's Gemini models. It can intelligently process and answer questions about complex PDF documents that contain both text and rich visual content like charts, graphs, and diagrams.
 
