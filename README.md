@@ -49,41 +49,41 @@ This chatbot uses an intelligent, hybrid on-demand architecture to solve the cha
 * **PDF Processing:** PyMuPDF
 
 ## Setup & Usage
-1. Prerequisites
+**1. Prerequisites**
 
-    Python 3.8+
+* Python 3.8+
 
-    Git
+* Git
 
-    A Google API Key with the Gemini API enabled.
+* A Google API Key with the Gemini API enabled.
 
-2. Installation
+**2. Installation**
 
 Clone the repository and navigate into the project directory:
 
-git clone https://github.com/your-username/your-repo-name.git
-cd your-repo-name
+    git clone https://github.com/your-username/your-repo-name.git
+    cd your-repo-name
 
 Create and activate a virtual environment:
-
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+    
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 Install the required dependencies:
 
-pip install -r requirements.txt
+    pip install -r requirements.txt
 
-3. Configuration
+**3. Configuration**
 
 Create a file named .env in the root of the project directory and add your Google API Key:
 
-GOOGLE_API_KEY="YOUR_API_KEY_HERE"
+    GOOGLE_API_KEY="YOUR_API_KEY_HERE"
 
 Make sure you have a .gitignore file to prevent your .env file and other sensitive data from being committed.
-4. Running the Application
+**4. Running the Application**
 
 Launch the Chainlit application from your terminal:
 
-chainlit run app.py -w
+    chainlit run app.py -w
 
 Open your web browser and navigate to http://localhost:8000 to start interacting with your multimodal chatbot.
