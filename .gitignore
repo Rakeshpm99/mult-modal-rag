@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Uploaded documents and generated images
+uploaded_docs/
+
+# ChromaDB database directories
+chroma_db*
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# Chainlit cache
+.chainlit/
