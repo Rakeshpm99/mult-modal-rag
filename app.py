@@ -27,7 +27,7 @@ CHAT_MODEL_NAME = "gemini-1.5-flash"
 VISION_MODEL_NAME = "gemini-1.5-flash"
 
 UPLOAD_DIR = "uploaded_docs"
-CHROMA_DB_DIR = "chroma_db_multimodal_final" # New DB for the final architecture
+CHROMA_DB_DIR = "chroma_db_multimodal_final_v3" # New DB for the final architecture
 
 # --- Create Directories ---
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -40,54 +40,51 @@ chat_llm = ChatGoogleGenerativeAI(model=CHAT_MODEL_NAME, temperature=0.3, google
 
 # --- Helper Functions ---
 
-def process_pdf_for_hybrid_retrieval(pdf_path: str, file_name: str) -> (List[Document], Dict[int, List[str]]):
+def process_pdf_with_text_tagging(pdf_path: str, file_name: str) -> (List[Document], Dict[int, List[str]]):
     """
-    Processes a PDF for a hybrid on-demand retrieval strategy.
-    - Extracts and chunks text.
-    - Creates simple placeholder documents for images to make them discoverable.
+    Processes a PDF using a text-tagging strategy.
+    - First, identifies all pages that contain images.
+    - Extracts text chunks and appends a special tag to any chunk from a page with images.
     - Stores the actual image data (base64) in a separate dictionary for on-demand use.
     """
-    all_docs_for_vectorstore = []
     image_store = {}
+    pages_with_images = set()
 
-    # 1. Extract and chunk text
-    print(f"Loading text from PDF: {pdf_path}")
-    from langchain_community.document_loaders import PyPDFLoader
-    loader = PyPDFLoader(pdf_path)
-    pdf_docs = loader.load()
-    
-    text_chunks = text_splitter.split_documents(pdf_docs)
-    for chunk in text_chunks:
-        chunk.metadata["source"] = file_name
-    all_docs_for_vectorstore.extend(text_chunks)
-    print(f"Created {len(text_chunks)} text chunks.")
-
-    # 2. Extract images, store them, and create simple placeholders
-    print("Extracting images and creating placeholders...")
+    # 1. First pass: Identify pages with images and store the image data
+    print("First pass: Identifying pages with images...")
     doc = fitz.open(pdf_path)
     for page_num in range(len(doc)):
         page_images_base64 = []
-        
-        for img_index, img in enumerate(doc.load_page(page_num).get_images(full=True)):
+        for img in doc.load_page(page_num).get_images(full=True):
             xref = img[0]
             base_image = doc.extract_image(xref)
             image_bytes = base_image["image"]
             img_base64 = base64.b64encode(image_bytes).decode('utf-8')
             page_images_base64.append(img_base64)
-            
-            # Create a simple, structured placeholder document for each image
-            placeholder_doc = Document(
-                page_content=f"[Image Placeholder: An image, chart, or graphic is on this page. Query the image directly to understand its content.]",
-                metadata={"source": file_name, "page": page_num + 1, "type": "image_placeholder"}
-            )
-            all_docs_for_vectorstore.append(placeholder_doc)
         
         if page_images_base64:
+            pages_with_images.add(page_num + 1)
             image_store[page_num + 1] = page_images_base64
-            
     doc.close()
-    print(f"Stored images from {len(image_store)} pages and created placeholders.")
-    return all_docs_for_vectorstore, image_store
+    print(f"Found images on pages: {sorted(list(pages_with_images))}")
+
+    # 2. Second pass: Extract text and tag the chunks
+    print("Second pass: Extracting and tagging text chunks...")
+    from langchain_community.document_loaders import PyPDFLoader
+    loader = PyPDFLoader(pdf_path)
+    pdf_docs = loader.load()
+    
+    text_chunks = text_splitter.split_documents(pdf_docs)
+    
+    for chunk in text_chunks:
+        chunk.metadata["source"] = file_name
+        page_number = chunk.metadata.get("page")
+        if page_number and page_number in pages_with_images:
+            # Append the special tag to the content
+            chunk.page_content += "\n\n[Context: This page also contains a visual element like a chart or diagram.]"
+    
+    print(f"Created and tagged {len(text_chunks)} text chunks.")
+    return text_chunks, image_store
 
 async def summarize_images_on_demand(images_base64: List[str], page_number: int) -> str:
     """
@@ -108,9 +105,11 @@ async def summarize_images_on_demand(images_base64: List[str], page_number: int)
                 ]
             )
             summaries.append(msg.content)
-            await cl.sleep(1) # Small safety delay between API calls
+            await cl.sleep(1.5) # Safety delay
     except Exception as e:
-        print(f"Error generating summary for images on page {page_number}: {e}")
+        error_message = f"Error generating summary for images on page {page_number}: {e}"
+        print(error_message)
+        await cl.Message(content=error_message).send()
         return ""
     
     return "\n\n".join(summaries)
@@ -137,24 +136,24 @@ async def start():
     msg = cl.Message(content=f"Processing `{uploaded_file.name}`... This will be quick!")
     await msg.send()
 
-    # Process PDF for hybrid retrieval
-    all_docs, image_store = await cl.make_async(process_pdf_for_hybrid_retrieval)(file_path, uploaded_file.name)
+    # Process PDF using the new text-tagging method
+    tagged_text_chunks, image_store = await cl.make_async(process_pdf_with_text_tagging)(file_path, uploaded_file.name)
     
-    if not all_docs:
+    if not tagged_text_chunks:
         await cl.Message(content="Could not extract any content from the document.").send()
         return
 
-    # Create a single vector store from text chunks AND image placeholders
-    print("Creating hybrid vector store...")
+    print("Creating vector store from tagged text chunks...")
     vectorstore = await cl.make_async(Chroma.from_documents)(
-        documents=all_docs,
+        documents=tagged_text_chunks,
         embedding=embeddings_model,
         persist_directory=CHROMA_DB_DIR
     )
     print("Vector store created.")
 
-    cl.user_session.set("retriever", vectorstore.as_retriever(search_kwargs={"k": 10}))
+    cl.user_session.set("retriever", vectorstore.as_retriever(search_kwargs={"k": 7}))
     cl.user_session.set("image_store", image_store)
+    cl.user_session.set("summaries_cache", {})
 
     msg.content = f"✅ Processing complete! You can now ask any questions about `{uploaded_file.name}`."
     await msg.update()
@@ -163,37 +162,51 @@ async def start():
 async def main(message: cl.Message):
     retriever = cl.user_session.get("retriever")
     image_store = cl.user_session.get("image_store")
+    summaries_cache = cl.user_session.get("summaries_cache")
 
     if not retriever:
         await cl.Message(content="The document has not been processed yet.").send()
         return
 
-    # 1. Retrieve relevant documents (will include text and image placeholders)
+    # 1. Retrieve relevant text chunks (some will be tagged)
     retrieved_docs = await retriever.ainvoke(message.content)
     
-    # Separate text from image placeholders
-    text_context_docs = [doc for doc in retrieved_docs if doc.metadata.get("type") != "image_placeholder"]
-    image_placeholder_docs = [doc for doc in retrieved_docs if doc.metadata.get("type") == "image_placeholder"]
+    text_context = "\n\n".join([doc.page_content for doc in retrieved_docs])
     
-    text_context = "\n\n".join([doc.page_content for doc in text_context_docs])
-    
-    # 2. Find relevant pages from placeholders and summarize images on-demand
-    relevant_pages = sorted(list(set(doc.metadata.get("page") for doc in image_placeholder_docs)))
-    image_context = ""
-    
-    if relevant_pages:
-        await cl.Message(content=f"Found potentially relevant images on pages: {relevant_pages}. Analyzing them now...").send()
-        for page_num in relevant_pages:
-            if page_num in image_store:
-                image_summaries = await summarize_images_on_demand(image_store[page_num], page_num)
-                if image_summaries:
-                    image_context += f"\n\n--- Summary of Image(s) on Page {page_num} ---\n{image_summaries}"
+    # 2. Find pages with images that need to be analyzed based on the retrieved docs
+    relevant_pages = sorted(list(set(doc.metadata.get("page") for doc in retrieved_docs if doc.metadata.get("page") in image_store)))
+    pages_to_analyze = [p for p in relevant_pages if p not in summaries_cache]
 
-    # 3. Construct the final prompt
+    # 3. Ask user for permission to analyze new images
+    if pages_to_analyze:
+        # FIX: Added payload={} to satisfy a requirement in certain versions of Chainlit.
+        action_buttons = [
+            cl.Action(name="analyze", value="yes", label="Yes, analyze them", payload={}),
+            cl.Action(name="skip", value="no", label="No, answer without them", payload={}),
+        ]
+        res = await cl.AskActionMessage(
+            content=f"I found potentially relevant images on pages: {pages_to_analyze}. Would you like me to analyze them? This may use API credits.",
+            actions=action_buttons,
+            timeout=60
+        ).send()
+
+        if res and res.get("value") == "yes":
+            for page_num in pages_to_analyze:
+                summary = await summarize_images_on_demand(image_store[page_num], page_num)
+                if summary:
+                    summaries_cache[page_num] = summary
+
+    # 4. Assemble the final context from text and all relevant cached summaries
+    image_context = ""
+    for page_num in relevant_pages:
+        if page_num in summaries_cache:
+            image_context += f"\n\n--- Summary of Image(s) on Page {page_num} ---\n{summaries_cache[page_num]}"
+
+    # 5. Construct the final prompt and generate the answer
     prompt_template = """You are an expert AI assistant. Your task is to answer the user's question based on the provided context.
-The context contains two parts: text excerpts and, if available, summaries of relevant images that were just generated.
+The context contains two parts: text excerpts and summaries of relevant images.
+Some text excerpts may contain a note like '[Context: This page also contains a visual element...]'. Use this as a strong hint to look at the corresponding image summary.
 Synthesize information from both sources to provide a comprehensive response.
-If the question refers to a visual element (chart, graph, diagram), prioritize the image summary context.
 
 ---
 Text Context:
@@ -218,8 +231,8 @@ Answer:"""
     await msg.send()
 
     final_context = {
-        "text_context": text_context if text_context else "No relevant text found.",
-        "image_context": image_context if image_context else "No relevant images were found or analyzed for this query.",
+        "text_context": text_context,
+        "image_context": image_context if image_context else "No relevant images were analyzed for this query.",
         "question": message.content
     }
 

@@ -1,11 +1,12 @@
-# Environment variables
+# Environment variables - NEVER commit this!
 .env
 
 # Uploaded documents and generated images
 uploaded_docs/
 
 # ChromaDB database directories
-chroma_db*
+chroma_db_multimodal_final_v2/
+chroma_db*/
 
 # Python cache files
 __pycache__/
@@ -13,6 +14,3 @@ __pycache__/
 
 # Virtual environment
 venv/
-
-# Chainlit cache
-.chainlit/
